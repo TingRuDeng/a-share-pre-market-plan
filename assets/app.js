@@ -269,11 +269,23 @@ function normalizeStock(item) {
 // 渲染今日计划摘要，突出纪律信号。
 function renderPlan() {
   const parsed = state.plan?.parsed || {};
-  elements.planMeta.textContent = `${state.plan.date} 公开盘前计划`;
+  elements.planMeta.textContent = `${state.plan.date} 公开盘前计划 | ${getPlanSourceText(state.plan)}`;
   elements.disciplineBadge.textContent = parsed.disciplineHints?.join("、") || "按纪律执行";
   elements.disciplineBadge.className = getConservativeMode() ? "badge danger" : "badge good";
   elements.planSummary.innerHTML = buildPlanSummary(parsed);
   renderStrategyForm();
+}
+
+// 显示计划来源，便于识别是否走了 GitHub 兜底。
+function getPlanSourceText(plan) {
+  const sourceMap = {
+    "local-today": "本地当天",
+    "github-today": "GitHub 当天",
+    "local-latest": "本地最新",
+    "empty": "无计划",
+  };
+  const source = sourceMap[plan?.source] || "未知来源";
+  return plan?.warning ? `${source}，${plan.warning}` : source;
 }
 
 // 生成策略摘要卡片 HTML。

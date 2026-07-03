@@ -9,6 +9,8 @@ const EASTMONEY_HOST = "push2.eastmoney.com";
 const TOP_STOCK_PATH = "/api/qt/clist/get";
 const QUOTE_PATH = "/api/qt/ulist.np/get";
 const DEFAULT_TOP_LIMIT = 100;
+const PLAN_TIME_ZONE = "Asia/Shanghai";
+const REMOTE_PLAN_BASE_URL = "https://raw.githubusercontent.com/TingRuDeng/a-share-pre-market-plan/main";
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
 const MIME_TYPES = new Map([
   [".html", "text/html; charset=utf-8"],
@@ -23,23 +25,81 @@ const REQUEST_HEADERS = {
   "Cache-Control": "no-cache",
   "Connection": "close",
 };
+const GITHUB_HEADERS = {
+  "User-Agent": "Mozilla/5.0 AppleWebKit/537.36 Chrome/120 Safari/537.36",
+  "Accept": "text/plain,*/*",
+  "Cache-Control": "no-cache",
+};
 
-// 读取最新日期计划，避免前端直接访问本地文件受浏览器限制。
-function readLatestPlan() {
+// 读取当日计划，本地缺失时从 GitHub 原仓库下载并缓存。
+async function readLatestPlan() {
+  const todayFile = `${getTodayDate()}.md`;
+  const todayPath = path.join(ROOT_DIR, todayFile);
+  if (fs.existsSync(todayPath)) {
+    return buildPlanResponse(todayFile, fs.readFileSync(todayPath, "utf8"), "local-today");
+  }
+
+  const remoteResult = await tryFetchRemotePlan(todayFile);
+  if (remoteResult.content) {
+    fs.writeFileSync(todayPath, remoteResult.content, "utf8");
+    return buildPlanResponse(todayFile, remoteResult.content, "github-today");
+  }
+
+  return readLatestLocalPlan(remoteResult.warning || `GitHub 原仓库未找到 ${todayFile}，已回退到本地最新计划。`);
+}
+
+// 尝试拉取远端计划，失败时返回明确 warning 供页面展示。
+async function tryFetchRemotePlan(file) {
+  try {
+    return { content: await fetchRemotePlan(file), warning: "" };
+  } catch (error) {
+    return { content: "", warning: `${error.message}，已回退到本地最新计划。` };
+  }
+}
+
+// 按中国交易日习惯生成当天文件名日期。
+function getTodayDate() {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: PLAN_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const valueOf = (type) => parts.find((part) => part.type === type)?.value || "";
+  return `${valueOf("year")}-${valueOf("month")}-${valueOf("day")}`;
+}
+
+// 从 GitHub 原仓库拉取当天 Markdown，404 视为未发布。
+async function fetchRemotePlan(file) {
+  const response = await fetch(`${REMOTE_PLAN_BASE_URL}/${file}`, { headers: GITHUB_HEADERS });
+  if (response.status === 404) return "";
+  if (!response.ok) throw new Error(`GitHub 计划下载失败：${response.status}`);
+  return response.text();
+}
+
+// 读取本地最新计划，作为远端未发布时的明确回退。
+function readLatestLocalPlan(warning = "") {
   const files = fs.readdirSync(ROOT_DIR)
     .filter((file) => /^\d{4}-\d{2}-\d{2}\.md$/.test(file))
     .sort();
   const latestFile = files.at(-1);
   if (!latestFile) {
-    return { date: "", file: "", content: "", parsed: parsePlan("") };
+    return buildPlanResponse("", "", "empty", warning || "本地没有可用盘前计划。");
   }
 
   const content = fs.readFileSync(path.join(ROOT_DIR, latestFile), "utf8");
+  return buildPlanResponse(latestFile, content, "local-latest", warning);
+}
+
+// 统一计划响应结构，页面可据此显示数据来源和回退原因。
+function buildPlanResponse(file, content, source, warning = "") {
   return {
-    date: latestFile.replace(".md", ""),
-    file: latestFile,
+    date: file.replace(".md", ""),
+    file,
     content,
     parsed: parsePlan(content),
+    source,
+    warning,
   };
 }
 
@@ -169,7 +229,7 @@ function sendJson(response, statusCode, payload) {
 async function handleApi(requestUrl, response) {
   try {
     if (requestUrl.pathname === "/api/latest-plan") {
-      sendJson(response, 200, readLatestPlan());
+      sendJson(response, 200, await readLatestPlan());
       return;
     }
     if (requestUrl.pathname === "/api/top-stocks") {
