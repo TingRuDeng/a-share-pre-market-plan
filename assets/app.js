@@ -19,12 +19,13 @@ const DEFAULT_STRATEGY = {
 };
 
 const DEFAULT_HOLDINGS = [
-  { code: "600900", name: "长江电力", cost: 28.586, quantity: 5800 },
-  { code: "002299", name: "圣农发展", cost: 15.663, quantity: 5300 },
-  { code: "09988", name: "阿里巴巴-W", cost: 136.72, quantity: 2000 },
-  { code: "600111", name: "北方稀土", cost: 47.706, quantity: 2000 },
-  { code: "688111", name: "金山办公", cost: 276.693, quantity: 400 },
-  { code: "00700", name: "腾讯控股", cost: 581.229, quantity: 300 },
+  { code: "600900", name: "长江电力", cost: 28.5857, quantity: 5800 },
+  { code: "09988", name: "阿里巴巴-W", cost: 144.3682, quantity: 1700 },
+  { code: "00700", name: "腾讯控股", cost: 582.1024, quantity: 300 },
+  { code: "600111", name: "北方稀土", cost: 47.7057, quantity: 2000 },
+  { code: "688111", name: "XD金山办", cost: 335.7912, quantity: 200 },
+  { code: "000938", name: "紫光股份", cost: 30.745, quantity: 1000 },
+  { code: "002299", name: "圣农发展", cost: 14.7768, quantity: 1800 },
 ];
 
 const INDUSTRY_KEYWORDS = new Map([
