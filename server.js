@@ -14,6 +14,7 @@ const MAX_TOP_LIMIT = 100;
 const MAX_SECID_COUNT = 120;
 const PLAN_TIME_ZONE = "Asia/Shanghai";
 const REMOTE_PLAN_BASE_URL = "https://raw.githubusercontent.com/TingRuDeng/a-share-pre-market-plan/main";
+const PLAN_FILE_PATTERN = /^\d{4}-\d{2}-\d{2}\.md$/;
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
 const MIME_TYPES = new Map([
   [".html", "text/html; charset=utf-8"],
@@ -37,15 +38,16 @@ const GITHUB_HEADERS = {
 // 读取当日计划，本地缺失时从 GitHub 原仓库下载并缓存。
 async function readLatestPlan() {
   const todayFile = `${getTodayDate()}.md`;
-  const todayPath = path.join(ROOT_DIR, todayFile);
-  if (fs.existsSync(todayPath)) {
-    return buildPlanResponse(todayFile, fs.readFileSync(todayPath, "utf8"), "local-today");
+  const localPlan = readLocalPlan(todayFile);
+  if (localPlan) {
+    return buildPlanResponse(todayFile, localPlan.content, localPlan.source, "", localPlan.relativePath);
   }
 
   const remoteResult = await tryFetchRemotePlan(todayFile);
   if (remoteResult.content) {
-    fs.writeFileSync(todayPath, remoteResult.content, "utf8");
-    return buildPlanResponse(todayFile, remoteResult.content, "github-today");
+    const targetPath = planRelativePath(todayFile);
+    writeLocalPlan(targetPath, remoteResult.content);
+    return buildPlanResponse(todayFile, remoteResult.content, "github-today", "", targetPath);
   }
 
   return readLatestLocalPlan(remoteResult.warning || `GitHub 原仓库未找到 ${todayFile}，已回退到本地最新计划。`);
@@ -74,7 +76,15 @@ function getTodayDate() {
 
 // 从 GitHub 原仓库拉取当天 Markdown，404 视为未发布。
 async function fetchRemotePlan(file) {
-  const response = await fetch(`${REMOTE_PLAN_BASE_URL}/${file}`, { headers: GITHUB_HEADERS });
+  const currentPath = planRelativePath(file);
+  const currentContent = await fetchRemoteText(currentPath);
+  if (currentContent) return currentContent;
+  return fetchRemoteText(file);
+}
+
+// 拉取指定远端文本路径，404 交给调用方继续回退。
+async function fetchRemoteText(relativePath) {
+  const response = await fetch(`${REMOTE_PLAN_BASE_URL}/${relativePath}`, { headers: GITHUB_HEADERS });
   if (response.status === 404) return "";
   if (!response.ok) throw new Error(`GitHub 计划下载失败：${response.status}`);
   return response.text();
@@ -82,23 +92,72 @@ async function fetchRemotePlan(file) {
 
 // 读取本地最新计划，作为远端未发布时的明确回退。
 function readLatestLocalPlan(warning = "") {
-  const files = fs.readdirSync(ROOT_DIR)
-    .filter((file) => /^\d{4}-\d{2}-\d{2}\.md$/.test(file))
-    .sort();
-  const latestFile = files.at(-1);
-  if (!latestFile) {
+  const plans = listLocalPlans();
+  const latestPlan = plans.at(-1);
+  if (!latestPlan) {
     return buildPlanResponse("", "", "empty", warning || "本地没有可用盘前计划。");
   }
 
-  const content = fs.readFileSync(path.join(ROOT_DIR, latestFile), "utf8");
-  return buildPlanResponse(latestFile, content, "local-latest", warning);
+  const content = fs.readFileSync(path.join(ROOT_DIR, latestPlan.relativePath), "utf8");
+  return buildPlanResponse(latestPlan.file, content, "local-latest", warning, latestPlan.relativePath);
+}
+
+// 优先读取新目录，保留根目录旧文件兼容，方便历史链接平滑迁移。
+function readLocalPlan(file) {
+  for (const relativePath of [planRelativePath(file), file]) {
+    const absolutePath = path.join(ROOT_DIR, relativePath);
+    if (fs.existsSync(absolutePath)) {
+      const source = relativePath === file ? "local-today-legacy" : "local-today";
+      return { content: fs.readFileSync(absolutePath, "utf8"), relativePath, source };
+    }
+  }
+  return null;
+}
+
+// 将日期文件归档到 plans/YYYY/MM 下，避免根目录持续膨胀。
+function planRelativePath(file) {
+  if (!PLAN_FILE_PATTERN.test(file)) return file;
+  return path.join("plans", file.slice(0, 4), file.slice(5, 7), file);
+}
+
+// 缓存远端计划时主动创建月份目录。
+function writeLocalPlan(relativePath, content) {
+  const absolutePath = path.join(ROOT_DIR, relativePath);
+  fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+  fs.writeFileSync(absolutePath, content, "utf8");
+}
+
+// 汇总新旧两类本地计划，按文件日期排序供回退读取。
+function listLocalPlans() {
+  const plansDir = path.join(ROOT_DIR, "plans");
+  return [...listPlanFiles(plansDir), ...listLegacyRootPlans()]
+    .sort((left, right) => left.file.localeCompare(right.file));
+}
+
+// 递归扫描 plans 目录中的日期 Markdown 文件。
+function listPlanFiles(directory) {
+  if (!fs.existsSync(directory)) return [];
+  return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const absolutePath = path.join(directory, entry.name);
+    if (entry.isDirectory()) return listPlanFiles(absolutePath);
+    if (!entry.isFile() || !PLAN_FILE_PATTERN.test(entry.name)) return [];
+    return [{ file: entry.name, relativePath: path.relative(ROOT_DIR, absolutePath) }];
+  });
+}
+
+// 临时兼容根目录日期文件，后续确认无引用后可删除。
+function listLegacyRootPlans() {
+  return fs.readdirSync(ROOT_DIR)
+    .filter((file) => PLAN_FILE_PATTERN.test(file))
+    .map((file) => ({ file, relativePath: file }));
 }
 
 // 统一计划响应结构，页面可据此显示数据来源和回退原因。
-function buildPlanResponse(file, content, source, warning = "") {
+function buildPlanResponse(file, content, source, warning = "", relativePath = "") {
   return {
     date: file.replace(".md", ""),
     file,
+    path: relativePath || file,
     content,
     parsed: parsePlan(content),
     source,
