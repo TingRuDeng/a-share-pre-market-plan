@@ -18,15 +18,7 @@ const DEFAULT_STRATEGY = {
   refreshInterval: 0,
 };
 
-const DEFAULT_HOLDINGS = [
-  { code: "600900", name: "长江电力", cost: 28.5857, quantity: 5800 },
-  { code: "09988", name: "阿里巴巴-W", cost: 144.3682, quantity: 1700 },
-  { code: "00700", name: "腾讯控股", cost: 582.1024, quantity: 300 },
-  { code: "600111", name: "北方稀土", cost: 47.7057, quantity: 2000 },
-  { code: "688111", name: "XD金山办", cost: 335.7912, quantity: 200 },
-  { code: "000938", name: "紫光股份", cost: 30.745, quantity: 1000 },
-  { code: "002299", name: "圣农发展", cost: 14.7768, quantity: 1800 },
-];
+const DEFAULT_HOLDINGS = [];
 
 const INDUSTRY_KEYWORDS = new Map([
   ["贵金属", ["贵金属", "黄金", "白银"]],
@@ -697,14 +689,97 @@ function triggerDownload(url, filename) {
 async function importState(event) {
   const file = event.target.files?.[0];
   if (!file) return;
-  const payload = JSON.parse(await file.text());
-  state.strategy = payload.strategy || state.strategy;
-  state.holdings = payload.holdings || state.holdings;
-  state.operations = payload.operations || state.operations;
-  saveState();
-  renderStrategyForm();
-  renderOperations();
-  await refreshAll();
+  try {
+    const payload = JSON.parse(await file.text());
+    const imported = normalizeImportedState(payload);
+    state.strategy = imported.strategy;
+    state.holdings = imported.holdings;
+    state.operations = imported.operations;
+    saveState();
+    renderStrategyForm();
+    renderOperations();
+    await refreshAll();
+    setStatus("记录已导入，本地状态已更新。");
+  } catch (error) {
+    setStatus(`导入失败：${error.message}`);
+  } finally {
+    event.target.value = "";
+  }
+}
+
+// 归一化导入数据，避免错误 JSON 污染本地状态。
+function normalizeImportedState(payload) {
+  if (!isPlainObject(payload)) throw new Error("导入文件必须是 JSON 对象");
+  return {
+    strategy: normalizeImportedStrategy(payload.strategy),
+    holdings: normalizeImportedHoldings(payload.holdings),
+    operations: normalizeImportedOperations(payload.operations),
+  };
+}
+
+// 判断值是否是普通对象。
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+// 归一化导入策略，缺失字段沿用当前策略。
+function normalizeImportedStrategy(strategy) {
+  if (strategy === undefined) return state.strategy;
+  if (!isPlainObject(strategy)) throw new Error("strategy 必须是对象");
+  return {
+    sectors: Array.isArray(strategy.sectors) ? strategy.sectors.map(String).filter(Boolean) : state.strategy.sectors,
+    maxGain: clampNumber(strategy.maxGain, 0, 20, state.strategy.maxGain),
+    minTurnover: clampNumber(strategy.minTurnover, 0, 200, state.strategy.minTurnover),
+    maxPosition: clampNumber(strategy.maxPosition, 0, 1, state.strategy.maxPosition),
+    refreshInterval: clampNumber(strategy.refreshInterval, 0, 3600, state.strategy.refreshInterval),
+  };
+}
+
+// 校验并归一化导入持仓。
+function normalizeImportedHoldings(holdings) {
+  if (holdings === undefined) return state.holdings;
+  if (!Array.isArray(holdings)) throw new Error("holdings 必须是数组");
+  return holdings.map((item) => normalizeHoldingItem(item));
+}
+
+// 校验单条持仓，成本和数量必须是非负数。
+function normalizeHoldingItem(item) {
+  if (!isPlainObject(item)) throw new Error("持仓条目必须是对象");
+  const code = String(item.code || "").trim();
+  const name = String(item.name || "").trim();
+  const cost = Number(item.cost);
+  const quantity = Number(item.quantity);
+  if (!code || !name || !Number.isFinite(cost) || !Number.isFinite(quantity) || cost < 0 || quantity < 0) {
+    throw new Error("持仓条目缺少有效代码、名称、成本或数量");
+  }
+  return { code, name, cost, quantity };
+}
+
+// 校验并归一化导入操作记录。
+function normalizeImportedOperations(operations) {
+  if (operations === undefined) return state.operations;
+  if (!Array.isArray(operations)) throw new Error("operations 必须是数组");
+  return operations.map((item) => normalizeOperationItem(item));
+}
+
+// 校验单条操作记录，保留可展示字段。
+function normalizeOperationItem(item) {
+  if (!isPlainObject(item)) throw new Error("操作记录必须是对象");
+  const price = Number(item.price);
+  const quantity = Number(item.quantity);
+  if (!item.code || !Number.isFinite(price) || !Number.isFinite(quantity) || price < 0 || quantity < 0) {
+    throw new Error("操作记录缺少有效代码、价格或数量");
+  }
+  return {
+    id: String(item.id || Date.now()),
+    time: String(item.time || ""),
+    type: String(item.type || "观察"),
+    code: String(item.code).trim(),
+    name: String(item.name || item.code).trim(),
+    price,
+    quantity,
+    note: String(item.note || "").trim(),
+  };
 }
 
 // HTML 转义，避免用户输入备注污染页面结构。

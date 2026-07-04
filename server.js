@@ -4,11 +4,14 @@ const path = require("path");
 const { URL } = require("url");
 
 const PORT = Number(process.env.PORT || 8787);
+const HOST = process.env.HOST || "127.0.0.1";
 const ROOT_DIR = __dirname;
 const EASTMONEY_HOST = "push2.eastmoney.com";
 const TOP_STOCK_PATH = "/api/qt/clist/get";
 const QUOTE_PATH = "/api/qt/ulist.np/get";
 const DEFAULT_TOP_LIMIT = 100;
+const MAX_TOP_LIMIT = 100;
+const MAX_SECID_COUNT = 120;
 const PLAN_TIME_ZONE = "Asia/Shanghai";
 const REMOTE_PLAN_BASE_URL = "https://raw.githubusercontent.com/TingRuDeng/a-share-pre-market-plan/main";
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
@@ -219,6 +222,24 @@ function buildQuoteParams(secids) {
   });
 }
 
+// 限制成交额榜请求规模，避免本地接口被误用成无限代理。
+function parseTopLimit(value) {
+  const limit = Number(value);
+  if (!Number.isFinite(limit) || limit <= 0) return DEFAULT_TOP_LIMIT;
+  return Math.min(MAX_TOP_LIMIT, Math.floor(limit));
+}
+
+// 校验东方财富 secid，只允许页面需要的 A 股和港股格式。
+function parseSecids(value) {
+  const secids = String(value || "").split(",").map((item) => item.trim()).filter(Boolean);
+  if (secids.length === 0) throw new Error("缺少行情代码参数");
+  if (secids.length > MAX_SECID_COUNT) throw new Error("行情代码数量过多");
+  if (secids.some((item) => !/^(0|1)\.\d{6}$|^116\.\d{5}$/.test(item))) {
+    throw new Error("行情代码参数无效");
+  }
+  return secids.join(",");
+}
+
 // 统一写 JSON 响应，方便页面拿到明确错误。
 function sendJson(response, statusCode, payload) {
   response.writeHead(statusCode, JSON_HEADERS);
@@ -233,12 +254,12 @@ async function handleApi(requestUrl, response) {
       return;
     }
     if (requestUrl.pathname === "/api/top-stocks") {
-      const limit = Number(requestUrl.searchParams.get("limit")) || DEFAULT_TOP_LIMIT;
+      const limit = parseTopLimit(requestUrl.searchParams.get("limit"));
       sendJson(response, 200, await fetchEastmoney(TOP_STOCK_PATH, buildTopStockParams(limit)));
       return;
     }
     if (requestUrl.pathname === "/api/quotes") {
-      const secids = requestUrl.searchParams.get("secids") || "";
+      const secids = parseSecids(requestUrl.searchParams.get("secids"));
       sendJson(response, 200, await fetchEastmoney(QUOTE_PATH, buildQuoteParams(secids)));
       return;
     }
@@ -250,9 +271,19 @@ async function handleApi(requestUrl, response) {
 
 // 安全解析静态文件路径，避免访问项目目录外的文件。
 function resolveStaticPath(pathname) {
-  const safePath = pathname === "/" ? "/index.html" : decodeURIComponent(pathname);
-  const filePath = path.normalize(path.join(ROOT_DIR, safePath));
-  if (!filePath.startsWith(ROOT_DIR)) return "";
+  let decodedPath = "";
+  try {
+    decodedPath = decodeURIComponent(pathname);
+  } catch {
+    return "";
+  }
+  const segments = decodedPath.split("/").filter(Boolean);
+  if (segments.includes("..")) return "";
+  const safePath = decodedPath === "/" ? "index.html" : decodedPath.replace(/^\/+/, "");
+  if (safePath !== "index.html" && !safePath.startsWith("assets/")) return "";
+  const filePath = path.resolve(ROOT_DIR, safePath);
+  const relativePath = path.relative(ROOT_DIR, filePath);
+  if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) return "";
   return filePath;
 }
 
@@ -282,6 +313,6 @@ function createServer() {
   });
 }
 
-createServer().listen(PORT, () => {
-  console.log(`本地操盘面板已启动：http://localhost:${PORT}`);
+createServer().listen(PORT, HOST, () => {
+  console.log(`本地操盘面板已启动：http://${HOST}:${PORT}`);
 });
